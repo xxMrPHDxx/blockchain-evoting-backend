@@ -20,7 +20,7 @@ class Handler(BaseHTTPRequestHandler):
 			self.server.queue.append(params)
 			return self.send_json({
 				'success': True,
-				'type': 'voting added to queue successfully!'
+				'message': 'voting added to queue successfully!'
 			})
 		self.send_json({
 			'success': False,
@@ -30,6 +30,8 @@ class Handler(BaseHTTPRequestHandler):
 		self.wfile.write('\r\n'.join([
 			'HTTP/1.1 200 OK',
 			'Content-Type: application/json',
+			'Access-Control-Allow-Origin: *',
+			'Access-Control-Allow-Method: *',
 			'',
 			json.dumps(data)
 		]).encode('utf-8'))

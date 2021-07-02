@@ -75,6 +75,31 @@ def enqueue_voting(server):
 				continue
 			public_key = cursor.next()[0]
 
+			# Check for the candidate
+			cursor = db.execute(
+				f'SELECT position_id FROM candidates WHERE id={candidate_id}'
+			)
+			if not cursor:
+				print(f'Warning: Ignoring invalid candidate id {candidate_id}')
+				continue
+			position_id = cursor.next()[0]
+
+			# Check if user has voted enough candidate for that specific rank/position
+			cursor = db.execute('''
+				SELECT COUNT(*) FROM votes 
+				WHERE candidate_id=%s AND election_id=%s
+			''', (candidate_id, election_id))
+			if not cursor or cursor.rowcount != 1:
+				print('Warning: Something went wrong!')
+			count = cursor.next()[0]
+			cursor = db.execute('''
+				SELECT frequency FROM election_settings 
+				WHERE election_id=%s AND position_id=%s
+			''', (election_id, position_id))
+			target_count = cursor.next()[0]
+			if count >= target_count:
+				print('Warning: Trying to vote more candidates than expected!')
+
 			# Check for existing vote
 			cursor = db.execute('''
 					SELECT id FROM votes
@@ -87,7 +112,10 @@ def enqueue_voting(server):
 						(voter_id, candidate_id, election_id) 
 						VALUE (%s, %s, %s)
 				''', (voter_id, candidate_id, election_id))
+				if not cursor:
+					print('Error: Failed to insert vote!')
 				db.commit()
+				print('Info: Vote successfully inserted into db.')
 
 				# Get the inserted vote's id
 				cursor = db.execute('''
@@ -97,17 +125,15 @@ def enqueue_voting(server):
 				vote_id = cursor.next()[0]
 
 				# Sign the vote and get the sign
-				exit(requests.post(
+				result = json.loads(requests.post(
 					'http://localhost/blockchain/ajax.php?action=sign',
 					headers={
 						'Authorization': base64.b64encode(public_key.encode('utf-8'))
 					},
 					data={'vote_id': vote_id}
 				).text)
-
-				# Update the signature
-				cursor = db.execute(f"UPDATE votes SET signature='{signature}'")
-				db.commit()
+				if not result['success']:
+					print(f'Warning: Failed to sign vote with id {vote_id}')
 			else:
 				print('Warning: Vote already exists!')
 				continue
@@ -123,7 +149,6 @@ def enqueue_voting(server):
 
 					# Create a new block chain
 					chain = Blockchain(difficulty=difficulty)
-					print('Chain created!', chain)
 
 					# Encrypt the block data
 					block_data = json.loads(requests.post(
@@ -151,13 +176,13 @@ def enqueue_voting(server):
 							(block.data, block.nonce, block.prev, block.hash)
 						)
 						db.commit()
+						print('Info: Block successfully inserted into db')
 					
 					# Get the block id from the hash
 					cursor = db.execute(
 							f"SELECT id FROM blocks WHERE hash='{block.hash}'"
 					)
 					block_id = cursor.next()[0]
-					print('Block ID', block_id)
 
 					# Insert the chain into blockchains table
 					cursor = db.execute('''
@@ -165,6 +190,7 @@ def enqueue_voting(server):
 						 VALUE (%s, %s, %s)
 					''', (block_id, election_id, difficulty))
 					db.commit()
+					print('Info: Blockchain successfully inserted into db')
 
 					# The the inserted blockchain id
 					cursor = db.execute(
@@ -175,8 +201,28 @@ def enqueue_voting(server):
 					# Use that existing block chain
 					chain = blockchains[int(cursor.next()[0])]
 
-					print('Found existing chain', chain)
-			continue
+					# Encrypt the block data
+					block_data = json.loads(requests.post(
+						'http://localhost/blockchain/ajax.php?action=encrypt',
+						headers={
+							'Authorization': base64.b64encode(public_key.encode('utf-8'))
+						},
+						data={'data': json.dumps({'vote_id': vote_id})}
+					).text)['data']
+
+					# Adding new head block to it
+					chain.add(block_data)
+
+					# Insert the head block into the blocks table
+					block = chain.blocks[-1]
+					cursor = db.execute(
+						'INSERT INTO blocks ' +
+						'(data, nonce, prev_hash, hash) ' + 
+						'VALUE (%s, %s, %s, %s)', 
+						(block.data, block.nonce, block.prev, block.hash)
+					)
+					db.commit()
+					print('Info: Block successfully inserted into db.')
 
 if __name__ == '__main__':
 	server = HTTPServer(('0.0.0.0', 8000), Handler)
