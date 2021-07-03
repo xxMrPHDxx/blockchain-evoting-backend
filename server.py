@@ -63,85 +63,27 @@ def enqueue_voting(server):
 		time.sleep(1)
 		if len(server.queue) > 0:
 			print('Found a vote!')
-			vote = server.queue.pop()
-			voter_id     = vote['voter']
-			candidate_id = vote['candidate']
-			election_id  = vote['election']
+			vote        = server.queue.pop()
+			vote_id     = vote['vote']
+			election_id = vote['election']
+			public_key  = vote['public_key']
 
-			# Check for the voter
-			cursor = db.execute(f'SELECT public_key FROM voters	WHERE id={voter_id}')
-			if not cursor:
-				print(f'Warning: Ignoring invalid voter id {voter_id}')
-				continue
-			public_key = cursor.next()[0]
-
-			# Check for the candidate
-			cursor = db.execute(
-				f'SELECT position_id FROM candidates WHERE id={candidate_id}'
-			)
-			if not cursor:
-				print(f'Warning: Ignoring invalid candidate id {candidate_id}')
-				continue
-			position_id = cursor.next()[0]
-
-			# Check if user has voted enough candidate for that specific rank/position
-			cursor = db.execute('''
-				SELECT COUNT(*) FROM votes 
-				WHERE candidate_id=%s AND election_id=%s
-			''', (candidate_id, election_id))
-			if not cursor or cursor.rowcount != 1:
-				print('Warning: Something went wrong!')
-			count = cursor.next()[0]
-			cursor = db.execute('''
-				SELECT frequency FROM election_settings 
-				WHERE election_id=%s AND position_id=%s
-			''', (election_id, position_id))
-			target_count = cursor.next()[0]
-			if count >= target_count:
-				print('Warning: Trying to vote more candidates than expected!')
-
-			# Check for existing vote
-			cursor = db.execute('''
-					SELECT id FROM votes
-						WHERE voter_id=%s AND candidate_id=%s AND election_id=%s
-			''', (voter_id, candidate_id, election_id))
-			if cursor and cursor.rowcount == 0:
-				# Create a new vote if it's not exist
-				cursor = db.execute('''
-					INSERT INTO votes 
-						(voter_id, candidate_id, election_id) 
-						VALUE (%s, %s, %s)
-				''', (voter_id, candidate_id, election_id))
-				if not cursor:
-					print('Error: Failed to insert vote!')
-				db.commit()
-				print('Info: Vote successfully inserted into db.')
-
-				# Get the inserted vote's id
-				cursor = db.execute('''
-						SELECT id FROM votes
-							WHERE voter_id=%s AND candidate_id=%s AND election_id=%s
-				''', (voter_id, candidate_id, election_id))
-				vote_id = cursor.next()[0]
-
-				# Sign the vote and get the sign
-				result = json.loads(requests.post(
-					'http://localhost/blockchain/ajax.php?action=sign',
-					headers={
-						'Authorization': base64.b64encode(public_key.encode('utf-8'))
-					},
-					data={'vote_id': vote_id}
-				).text)
-				if not result['success']:
-					print(f'Warning: Failed to sign vote with id {vote_id}')
-			else:
-				print('Warning: Vote already exists!')
-				continue
+			# Sign the vote and get the signature
+			result = json.loads(requests.post(
+				'http://localhost/blockchain/ajax.php?action=sign',
+				headers={
+					'Authorization': public_key
+				},
+				data={'vote_id': vote_id}
+			).text)
+			if not result['success']:
+				print(f'Warning: Failed to sign vote with id {vote_id}')
+				print('Voting result', result)
 
 			# Check for existing block chain
-			cursor = db.execute('''
-				SELECT id FROM blockchains WHERE election_id=%s
-			''', (election_id,))
+			cursor = db.execute(
+				f"SELECT id FROM blockchains WHERE election_id={election_id}"
+			)
 			if cursor:
 				if cursor.rowcount == 0:
 					# Using a default difficulty
@@ -154,7 +96,7 @@ def enqueue_voting(server):
 					block_data = json.loads(requests.post(
 						'http://localhost/blockchain/ajax.php?action=encrypt',
 						headers={
-							'Authorization': base64.b64encode(public_key.encode('utf-8'))
+							'Authorization': public_key
 						},
 						data={'data': json.dumps({'vote_id': vote_id})}
 					).text)['data']
@@ -162,21 +104,16 @@ def enqueue_voting(server):
 					# Adding new head block to it
 					chain.add(block_data)
 
-					# Check if head block is not inserted yet
+					# Insert the head block into the blocks table
 					block = chain.blocks[-1]
 					cursor = db.execute(
-						f"SELECT * FROM blocks WHERE hash='{block.hash}'"
+						'INSERT INTO blocks ' +
+						'(data, nonce, prev_hash, hash) ' + 
+						'VALUE (%s, %s, %s, %s)', 
+						(block.data, block.nonce, block.prev, block.hash)
 					)
-					if cursor and cursor.rowcount == 0:
-						# Insert the head block into the blocks table
-						cursor = db.execute(
-							'INSERT INTO blocks ' +
-							'(data, nonce, prev_hash, hash) ' + 
-							'VALUE (%s, %s, %s, %s)', 
-							(block.data, block.nonce, block.prev, block.hash)
-						)
-						db.commit()
-						print('Info: Block successfully inserted into db')
+					db.commit()
+					print('Info: Block successfully inserted into db')
 					
 					# Get the block id from the hash
 					cursor = db.execute(
@@ -192,7 +129,7 @@ def enqueue_voting(server):
 					db.commit()
 					print('Info: Blockchain successfully inserted into db')
 
-					# The the inserted blockchain id
+					# Get the inserted blockchain id and insert into cache
 					cursor = db.execute(
 						f"SELECT id FROM blockchains WHERE election_id={election_id}"
 					)
@@ -205,7 +142,7 @@ def enqueue_voting(server):
 					block_data = json.loads(requests.post(
 						'http://localhost/blockchain/ajax.php?action=encrypt',
 						headers={
-							'Authorization': base64.b64encode(public_key.encode('utf-8'))
+							'Authorization': public_key.encode('utf-8')
 						},
 						data={'data': json.dumps({'vote_id': vote_id})}
 					).text)['data']
