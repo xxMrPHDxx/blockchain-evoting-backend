@@ -18,10 +18,16 @@ The structure would be
 
 '''
 
-blockchains = {} # TODO: Populate this from db to get existing blockchains
+blockchains = {}
 
 def enqueue_voting(server):
-	db = Database('127.0.0.1', 'root', 'password', 'blockchain')
+	# Connect to database from "config.json"
+	try:
+		with open('config.json', 'r', encoding='utf-8') as f:
+			config = json.load(f)
+		db = Database(*[config[k] for k in ['host', 'username', 'password', 'database']])
+	except e as Exception:
+		print(f'Failed to connect to database!\n\t{e.message}')
 
 	# populating the blockchains cache
 	cursor = db.execute(
@@ -57,7 +63,7 @@ def enqueue_voting(server):
 				chain.add(block_data)
 				assert chain.blocks[-1].hash == block_hash, 'Unmatched hash!'
 
-	print('Blockchains cache', blockchains)
+	print(f'Total blockchains: {len(blockchains)}')
 
 	while True:
 		time.sleep(1)
